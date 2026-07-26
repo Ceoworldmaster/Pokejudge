@@ -15,6 +15,7 @@ interface RunRequest {
   source: string;
   stdin: string;
   wandbox?: string;
+  timeLimitMs?: number;
 }
 
 interface RunResponse {
@@ -25,6 +26,8 @@ interface RunResponse {
   signal: string | null;
   code: number;
   ok: boolean;
+  timedOut: boolean;
+  backend?: string;
 }
 
 const WANDBOX_COMPILERS: Record<string, string> = {
@@ -35,23 +38,35 @@ const WANDBOX_COMPILERS: Record<string, string> = {
   go: "go-1.16.2",
 };
 
+/* Signals that indicate the process was killed for exceeding a time limit */
+const TIMEOUT_SIGNALS = new Set(["SIGKILL", "SIGTERM", "SIGXCPU", "SIGALRM", "9", "14", "15", "24"]);
+
+/* ── Piston (primary) — returns actual CPU time and enforces run_timeout ── */
 async function runPiston(req: RunRequest): Promise<RunResponse> {
+  const limitMs = req.timeLimitMs ?? 5000;
+  /* Piston run_timeout is in seconds. Set it just above the time limit so
+     our own time check fires first for borderline cases, while Piston still
+     kills truly infinite loops. Cap at 15s (Piston hard limit). */
+  const runTimeoutSec = Math.min(Math.ceil(limitMs / 1000) + 1, 15);
+
   const body = {
     language: req.language,
     version: req.version,
     files: [{ name: "main", content: req.source }],
     stdin: req.stdin,
     compile_timeout: 10000,
-    run_timeout: 15000,
+    run_timeout: runTimeoutSec,
     compile_memory_limit: -1,
     run_memory_limit: -1,
   };
 
+  const t0 = performance.now();
   const res = await fetch(PISTON_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  const wallMs = Math.round(performance.now() - t0);
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -62,33 +77,65 @@ async function runPiston(req: RunRequest): Promise<RunResponse> {
   const compile = data.compile ?? {};
   const run = data.run ?? {};
 
+  /* Piston returns run.time as a string in seconds (e.g. "0.1234") */
+  const runtimeMs = run.time != null ? Math.round(parseFloat(run.time) * 1000) : wallMs;
+  const signal: string | null = run.signal ?? null;
+  const code: number = run.code ?? 0;
+
+  /* TLE if: killed by a timeout signal, OR measured time exceeds the limit */
+  const killed = signal !== null && TIMEOUT_SIGNALS.has(signal);
+  const timedOut = killed || runtimeMs > limitMs;
+
   return {
     stdout: run.stdout ?? "",
     stderr: run.stderr ?? "",
     compileOutput: compile.output ?? "",
-    runtimeMs: run.time ? Math.round(parseFloat(run.time) * 1000) : 0,
-    signal: run.signal ?? null,
-    code: run.code ?? 0,
-    ok: (run.code === 0 || run.code === null) && !compile.code,
+    runtimeMs,
+    signal,
+    code,
+    ok: (code === 0 || code === null) && !compile.code && !timedOut,
+    timedOut,
   };
 }
 
+/* ── Wandbox (fallback) — no runtime field, use wall-clock + abort ── */
 async function runWandbox(req: RunRequest): Promise<RunResponse> {
   const compiler = req.wandbox ?? WANDBOX_COMPILERS[req.language];
   if (!compiler) throw new Error(`Wandbox: unsupported language ${req.language}`);
 
+  const limitMs = req.timeLimitMs ?? 5000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), limitMs + 3000);
+
   const body: Record<string, unknown> = {
     code: req.source,
     stdin: req.stdin,
-    compiler: compiler,
+    compiler,
     runtime: true,
   };
 
-  const res = await fetch(WANDBOX_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const t0 = performance.now();
+  let res: Response;
+  try {
+    res = await fetch(WANDBOX_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if ((e as Error).name === "AbortError") {
+      return {
+        stdout: "", stderr: "", compileOutput: "",
+        runtimeMs: limitMs, signal: "SIGKILL", code: 137,
+        ok: false, timedOut: true,
+      };
+    }
+    throw e;
+  }
+  const wallMs = Math.round(performance.now() - t0);
+  clearTimeout(timer);
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -96,18 +143,22 @@ async function runWandbox(req: RunRequest): Promise<RunResponse> {
   }
 
   const data = await res.json();
-
-  const status: string = data.status ?? "0";
+  const status: string = String(data.status ?? "0");
   const compileOk = status !== "1" && status !== "2";
+  const signal: string | null = data.signal ? String(data.signal) : null;
+
+  const killed = signal !== null && TIMEOUT_SIGNALS.has(signal);
+  const timedOut = killed || wallMs > limitMs;
 
   return {
     stdout: data.program_output ?? "",
     stderr: data.program_error ?? "",
     compileOutput: data.compiler_output ?? data.compiler_error ?? "",
-    runtimeMs: 0,
-    signal: data.signal ? String(data.signal) : null,
+    runtimeMs: wallMs,
+    signal,
     code: compileOk ? 0 : 1,
-    ok: compileOk,
+    ok: compileOk && !timedOut,
+    timedOut,
   };
 }
 
@@ -117,7 +168,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { language, version, source, stdin, wandbox } = await req.json() as RunRequest;
+    const { language, version, source, stdin, wandbox, timeLimitMs } = await req.json() as RunRequest;
 
     if (!language || !source) {
       return new Response(
@@ -127,18 +178,18 @@ Deno.serve(async (req: Request) => {
     }
 
     let result: RunResponse;
-    let backend = "wandbox";
+    let backend = "piston";
 
     try {
-      result = await runWandbox({ language, version, source, stdin, wandbox });
-    } catch (wandboxErr) {
-      console.error("Wandbox failed, trying Piston:", (wandboxErr as Error).message);
-      backend = "piston";
+      result = await runPiston({ language, version, source, stdin, timeLimitMs });
+    } catch (pistonErr) {
+      console.error("Piston failed, trying Wandbox:", (pistonErr as Error).message);
+      backend = "wandbox";
       try {
-        result = await runPiston({ language, version, source, stdin });
-      } catch (pistonErr) {
+        result = await runWandbox({ language, version, source, stdin, wandbox, timeLimitMs });
+      } catch (wandboxErr) {
         throw new Error(
-          `Both backends failed. Wandbox: ${(wandboxErr as Error).message}. Piston: ${(pistonErr as Error).message}`,
+          `Both backends failed. Piston: ${(pistonErr as Error).message}. Wandbox: ${(wandboxErr as Error).message}`,
         );
       }
     }
