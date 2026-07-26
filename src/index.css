@@ -68,3 +68,75 @@ body {
 .prose-poke blockquote { @apply border-l-4 border-red-500/50 pl-4 italic text-slate-400 my-3; }
 .prose-poke .katex { font-size: 1.05em; }
 .prose-poke .katex-display { margin: 1em 0; overflow-x: auto; overflow-y: hidden; }
+
+/* ====== Pokémon Element Neon Glow ====== */
+@keyframes element-pulse {
+  0%, 100% { box-shadow: 0 0 12px var(--el-glow, #ef4444)40, 0 0 24px var(--el-glow, #ef4444)20; }
+  50%      { box-shadow: 0 0 20px var(--el-glow, #ef4444)60, 0 0 40px var(--el-glow, #ef4444)30; }
+}
+.element-glow {
+  animation: element-pulse 2.5s ease-in-out infinite;
+}
+
+@keyframes border-glow {
+  0%, 100% { border-color: var(--el-color, #ef4444)80; }
+  50%      { border-color: var(--el-color, #ef4444)ff; }
+}
+.element-border-glow {
+  animation: border-glow 2.5s ease-in-out infinite;
+}
+
+/* ====== Ambient Particles ====== */
+@keyframes float-up {
+  0%   { transform: translateY(100vh) translateX(0) scale(0); opacity: 0; }
+  10%  { opacity: 0.4; transform: translateY(90vh) translateX(10px) scale(1); }
+  90%  { opacity: 0.4; }
+  100% { transform: translateY(-10vh) translateX(-20px) scale(0.5); opacity: 0; }
+}
+.particle {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: float-up linear infinite;
+}
+
+/* ====== Pokéball Submit Pulse ====== */
+@keyframes pokeball-pulse {
+  0%   { transform: scale(1); filter: drop-shadow(0 0 4px #ef4444); }
+  25%  { transform: scale(1.15) rotate(-8deg); filter: drop-shadow(0 0 16px #ef4444); }
+  50%  { transform: scale(1.25) rotate(8deg); filter: drop-shadow(0 0 24px #ef4444); }
+  75%  { transform: scale(1.15) rotate(-4deg); filter: drop-shadow(0 0 16px #ef4444); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 4px #ef4444); }
+}
+.pokeball-pulse {
+  animation: pokeball-pulse 0.8s ease-in-out infinite;
+}
+
+/* ====== Scale / Fade In ====== */
+@keyframes scale-in {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+.animate-scale-in { animation: scale-in 0.25s ease-out; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 0.3s ease-out; }
+
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+}

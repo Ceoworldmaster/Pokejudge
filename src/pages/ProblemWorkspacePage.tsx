@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import Editor from '@monaco-editor/react';
 import { supabase } from '@/lib/supabase';
 import { MOCK_PROBLEMS, MOCK_TEST_CASES } from '@/lib/mockData';
 import { LANGUAGES, languageById, ELEMENTS, DIFFICULTIES } from '@/lib/constants';
-import type { Problem, TestCase, Submission, Verdict } from '@/types';
+import type { Problem, TestCase, Submission } from '@/types';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { MarkdownRenderer } from '@/components/MarkdownRenderer';
@@ -13,10 +13,11 @@ import { ElementBadge, DifficultyBadge } from '@/components/Badges';
 import { VerdictBadge } from '@/components/VerdictBadge';
 import { Pokeball } from '@/components/Pokeball';
 import { PdfViewer } from '@/components/PdfViewer';
+import { BattleConsole, type BattleConsoleState } from '@/components/BattleConsole';
 import { judgeSubmission, runCode, type JudgeResult } from '@/services/piston';
 import {
   Play, Send, Copy, Clock, MemoryStick, FileText, FileCode2,
-  History, Lightbulb, ChevronLeft, Loader2, CheckCircle2, Terminal,
+  History, Lightbulb, ChevronLeft, Loader2,
 } from 'lucide-react';
 
 type Tab = 'statement' | 'submissions' | 'editorial';
@@ -24,7 +25,7 @@ type Tab = 'statement' | 'submissions' | 'editorial';
 export function ProblemWorkspacePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, profile } = useAuth();
+  const { user } = useAuth();
   const { toast } = useToast();
   const [problem, setProblem] = useState<Problem | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
@@ -35,15 +36,7 @@ export function ProblemWorkspacePage() {
   const [code, setCode] = useState(LANGUAGES[0].boilerplate);
   const [running, setRunning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [console, setConsole] = useState<{
-    verdict?: Verdict;
-    output?: string;
-    runtimeMs?: number;
-    memoryKb?: number;
-    passed?: number;
-    total?: number;
-    detail?: string;
-  }>({});
+  const [consoleState, setConsoleState] = useState<BattleConsoleState>({});
   const [consoleOpen, setConsoleOpen] = useState(false);
 
   useEffect(() => {
@@ -51,7 +44,6 @@ export function ProblemWorkspacePage() {
     (async () => {
       setLoading(true);
       const problemId = id ?? '';
-      // Try DB
       const { data: dbProblem } = await supabase.from('problems').select('*').eq('id', problemId).maybeSingle();
       let p: Problem | null = null;
       if (dbProblem) {
@@ -62,7 +54,6 @@ export function ProblemWorkspacePage() {
       if (cancelled) return;
       setProblem(p);
 
-      // Test cases
       if (dbProblem) {
         const { data: tc } = await supabase.from('test_cases').select('*').eq('problem_id', problemId);
         if (cancelled) return;
@@ -73,7 +64,6 @@ export function ProblemWorkspacePage() {
         setTestCases(MOCK_TEST_CASES[problemId] ?? []);
       }
 
-      // Submissions
       if (user) {
         const { data: subs } = await supabase
           .from('submissions')
@@ -107,21 +97,23 @@ export function ProblemWorkspacePage() {
     }
     setRunning(true);
     setConsoleOpen(true);
-    setConsole({ verdict: 'Running' });
+    setConsoleState({ verdict: 'Running', mode: 'run' });
     try {
       const lang = languageById(language);
       const tc = samples[0];
       const result = await runCode(lang, code, tc.input_data);
-      setConsole({
-        verdict: result.code === 0 && normalize(result.stdout) === normalize(tc.expected_output) ? 'Accepted' : (result.code !== 0 ? 'Runtime Error' : 'Wrong Answer'),
+      const isAc = result.code === 0 && normalize(result.stdout) === normalize(tc.expected_output);
+      setConsoleState({
+        verdict: isAc ? 'Accepted' : (result.code !== 0 ? 'Runtime Error' : 'Wrong Answer'),
         output: result.stdout || result.stderr || result.compileOutput,
         runtimeMs: result.runtimeMs,
-        passed: normalize(result.stdout) === normalize(tc.expected_output) ? 1 : 0,
+        passed: isAc ? 1 : 0,
         total: 1,
         detail: result.compileOutput ? result.compileOutput.slice(0, 1500) : result.stderr,
+        mode: 'run',
       });
     } catch (e) {
-      setConsole({ verdict: 'Runtime Error', detail: (e as Error).message });
+      setConsoleState({ verdict: 'Runtime Error', detail: (e as Error).message, mode: 'run' });
     } finally {
       setRunning(false);
     }
@@ -136,22 +128,23 @@ export function ProblemWorkspacePage() {
     }
     setSubmitting(true);
     setConsoleOpen(true);
-    setConsole({ verdict: 'Running' });
-    toast('info', 'Submission sent to Piston! Battle begins...');
+    setConsoleState({ verdict: 'Running', mode: 'submit' });
+    toast('info', 'Submission sent! Battle begins...');
 
     try {
       const lang = languageById(language);
       const result: JudgeResult = await judgeSubmission(lang, code, testCases, problem.time_limit_ms);
-      setConsole({
+      setConsoleState({
         verdict: result.verdict,
         runtimeMs: result.runtimeMs,
         memoryKb: result.memoryKb,
         passed: result.passed,
         total: result.total,
         detail: result.detail,
+        testCaseResults: result.testCaseResults,
+        mode: 'submit',
       });
 
-      // Save submission
       const { data: saved } = await supabase
         .from('submissions')
         .insert({
@@ -177,7 +170,7 @@ export function ProblemWorkspacePage() {
         toast('error', `${result.verdict} — ${result.detail?.slice(0, 80) ?? ''}`);
       }
     } catch (e) {
-      setConsole({ verdict: 'Runtime Error', detail: (e as Error).message });
+      setConsoleState({ verdict: 'Runtime Error', detail: (e as Error).message, mode: 'submit' });
       toast('error', (e as Error).message);
     } finally {
       setSubmitting(false);
@@ -219,7 +212,7 @@ export function ProblemWorkspacePage() {
           <h1 className="text-sm sm:text-base font-bold text-white truncate">{problem.title}</h1>
         </div>
         <div className="hidden md:flex items-center gap-2 shrink-0">
-          <ElementBadge element={problem.pokemon_element} />
+          <ElementBadge element={problem.pokemon_element} glow />
           <DifficultyBadge difficulty={problem.difficulty} />
         </div>
       </div>
@@ -229,12 +222,15 @@ export function ProblemWorkspacePage() {
           {/* Left pane: statement */}
           <Panel defaultSize={50} minSize={30}>
             <div className="h-full flex flex-col bg-slate-950/40">
-              {/* Metadata banner */}
-              <div className={`border-b border-slate-800 px-4 sm:px-6 py-3 ${elMeta.bg}`}>
+              {/* Metadata banner with element glow */}
+              <div
+                className={`border-b ${elMeta.border} px-4 sm:px-6 py-3 ${elMeta.bg} element-glow`}
+                style={{ ['--el-glow' as string]: elMeta.glow, ['--el-color' as string]: elMeta.color } as React.CSSProperties}
+              >
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-300">
                   <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> {problem.time_limit_ms}ms</span>
                   <span className="flex items-center gap-1.5"><MemoryStick className="h-3.5 w-3.5" /> {problem.memory_limit_mb} MB</span>
-                  <span className="flex items-center gap-1.5"><Pokeball size={12} /> {elMeta.name} — {elMeta.topic}</span>
+                  <span className="flex items-center gap-1.5"><Pokeball size={12} /> {elMeta.emoji} {elMeta.name} — {elMeta.topic}</span>
                   <span className="flex items-center gap-1.5"><FileText className="h-3.5 w-3.5" /> {diffMeta.label}</span>
                 </div>
               </div>
@@ -341,10 +337,14 @@ export function ProblemWorkspacePage() {
 
           <Separator className="w-1.5 bg-slate-800 hover:bg-red-500/50 transition-colors" />
 
-          {/* Right pane: editor */}
+          {/* Right pane: editor + battle console drawer */}
           <Panel defaultSize={50} minSize={30}>
             <div className="h-full flex flex-col bg-slate-950">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800 bg-slate-900/40">
+              {/* Editor header with element glow */}
+              <div
+                className={`flex items-center justify-between px-3 py-2 border-b ${elMeta.border} bg-slate-900/40 element-border-glow`}
+                style={{ ['--el-color' as string]: elMeta.color } as React.CSSProperties}
+              >
                 <select
                   value={language}
                   onChange={(e) => onLanguageChange(e.target.value)}
@@ -360,7 +360,9 @@ export function ProblemWorkspacePage() {
                     Test Attack
                   </button>
                   <button onClick={submit} disabled={submitting} className="btn-primary text-sm py-1.5">
-                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                    {submitting
+                      ? <Pokeball size={16} className="pokeball-pulse" />
+                      : <Send className="h-4 w-4" />}
                     Submit Attack
                   </button>
                 </div>
@@ -384,43 +386,14 @@ export function ProblemWorkspacePage() {
                 />
               </div>
 
-              {/* Battle console */}
-              <div className="border-t border-slate-800 bg-slate-900/60">
-                <button
-                  onClick={() => setConsoleOpen((v) => !v)}
-                  className="w-full flex items-center justify-between px-3 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800/40"
-                >
-                  <span className="flex items-center gap-2"><Terminal className="h-4 w-4 text-red-400" /> Battle Console</span>
-                  <span className="text-xs text-slate-500">{consoleOpen ? 'Hide' : 'Show'}</span>
-                </button>
-                {consoleOpen && (
-                  <div className="px-3 pb-3 max-h-48 overflow-y-auto space-y-2 animate-fade-in">
-                    {console.verdict && (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <VerdictBadge verdict={console.verdict} />
-                        {console.runtimeMs !== undefined && (
-                          <span className="text-xs text-slate-400 flex items-center gap-1"><Clock className="h-3 w-3" /> {console.runtimeMs}ms</span>
-                        )}
-                        {console.memoryKb !== undefined && console.memoryKb > 0 && (
-                          <span className="text-xs text-slate-400 flex items-center gap-1"><MemoryStick className="h-3 w-3" /> {console.memoryKb}KB</span>
-                        )}
-                        {console.passed !== undefined && console.total !== undefined && (
-                          <span className="text-xs text-slate-400 font-mono">{console.passed}/{console.total} cases</span>
-                        )}
-                      </div>
-                    )}
-                    {console.output && (
-                      <pre className="font-mono text-xs text-emerald-300 bg-slate-950/80 rounded p-2 overflow-x-auto whitespace-pre-wrap">{console.output}</pre>
-                    )}
-                    {console.detail && !console.output && (
-                      <pre className="font-mono text-xs text-slate-400 bg-slate-950/80 rounded p-2 overflow-x-auto whitespace-pre-wrap">{console.detail}</pre>
-                    )}
-                    {!console.verdict && !console.output && (
-                      <p className="text-xs text-slate-500">Run or submit to see battle results here.</p>
-                    )}
-                  </div>
-                )}
-              </div>
+              {/* Battle Console Drawer */}
+              <BattleConsole
+                state={consoleState}
+                open={consoleOpen}
+                onToggle={() => setConsoleOpen((v) => !v)}
+                running={running}
+                submitting={submitting}
+              />
             </div>
           </Panel>
         </Group>

@@ -14,6 +14,7 @@ interface RunRequest {
   version: string;
   source: string;
   stdin: string;
+  wandbox?: string;
 }
 
 interface RunResponse {
@@ -73,7 +74,7 @@ async function runPiston(req: RunRequest): Promise<RunResponse> {
 }
 
 async function runWandbox(req: RunRequest): Promise<RunResponse> {
-  const compiler = WANDBOX_COMPILERS[req.language];
+  const compiler = req.wandbox ?? WANDBOX_COMPILERS[req.language];
   if (!compiler) throw new Error(`Wandbox: unsupported language ${req.language}`);
 
   const body: Record<string, unknown> = {
@@ -96,7 +97,6 @@ async function runWandbox(req: RunRequest): Promise<RunResponse> {
 
   const data = await res.json();
 
-  // Wandbox returns: status, compiler_output, program_output, program_error, signal
   const status: string = data.status ?? "0";
   const compileOk = status !== "1" && status !== "2";
 
@@ -117,7 +117,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { language, version, source, stdin } = await req.json() as RunRequest;
+    const { language, version, source, stdin, wandbox } = await req.json() as RunRequest;
 
     if (!language || !source) {
       return new Response(
@@ -127,18 +127,18 @@ Deno.serve(async (req: Request) => {
     }
 
     let result: RunResponse;
-    let backend = "piston";
+    let backend = "wandbox";
 
     try {
-      result = await runPiston({ language, version, source, stdin });
-    } catch (pistonErr) {
-      console.error("Piston failed, trying Wandbox:", (pistonErr as Error).message);
-      backend = "wandbox";
+      result = await runWandbox({ language, version, source, stdin, wandbox });
+    } catch (wandboxErr) {
+      console.error("Wandbox failed, trying Piston:", (wandboxErr as Error).message);
+      backend = "piston";
       try {
-        result = await runWandbox({ language, version, source, stdin });
-      } catch (wandboxErr) {
+        result = await runPiston({ language, version, source, stdin });
+      } catch (pistonErr) {
         throw new Error(
-          `Both backends failed. Piston: ${(pistonErr as Error).message}. Wandbox: ${(wandboxErr as Error).message}`,
+          `Both backends failed. Wandbox: ${(wandboxErr as Error).message}. Piston: ${(pistonErr as Error).message}`,
         );
       }
     }

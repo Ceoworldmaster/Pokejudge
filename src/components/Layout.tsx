@@ -41,6 +41,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="absolute -top-40 -left-40 h-96 w-96 rounded-full bg-red-500/10 blur-3xl" />
         <div className="absolute top-1/3 -right-40 h-96 w-96 rounded-full bg-violet-500/10 blur-3xl" />
         <div className="absolute bottom-0 left-1/3 h-96 w-96 rounded-full bg-cyan-500/5 blur-3xl" />
+        {/* Floating particles */}
+        {Array.from({ length: 14 }).map((_, i) => {
+          const size = 3 + (i % 4) * 2;
+          const left = (i * 7.3) % 100;
+          const duration = 18 + (i % 5) * 4;
+          const delay = (i * 1.7) % 12;
+          const colors = ['#ef444440', '#3b82f640', '#a855f740', '#22d3ee40', '#facc1540'];
+          const color = colors[i % colors.length];
+          return (
+            <span
+              key={i}
+              className="particle"
+              style={{
+                left: `${left}%`,
+                width: `${size}px`,
+                height: `${size}px`,
+                backgroundColor: color,
+                animationDuration: `${duration}s`,
+                animationDelay: `${delay}s`,
+              }}
+            />
+          );
+        })}
       </div>
 
       <header className="sticky top-0 z-50 glass-strong border-b border-slate-800/80">

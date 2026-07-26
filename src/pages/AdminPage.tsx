@@ -328,7 +328,7 @@ function ProblemCreator({
               <label className="block text-xs font-semibold text-slate-400 mb-1 uppercase">Element</label>
               <select value={element} onChange={(e) => setElement(e.target.value)} className="input-field">
                 {ELEMENT_LIST.map((el) => (
-                  <option key={el} value={el}>{el} — {ELEMENTS[el].topic}</option>
+                  <option key={el} value={el}>{ELEMENTS[el].emoji} {el} — {ELEMENTS[el].topic}</option>
                 ))}
               </select>
             </div>
@@ -496,7 +496,7 @@ function ProblemCreator({
                   <span className="text-xs text-slate-500 capitalize">{p.difficulty}</span>
                 </div>
                 <p className="text-sm font-semibold text-white mt-1 truncate">{p.title}</p>
-                <p className="text-xs text-slate-500 mt-0.5">{p.pokemon_element} {p.pdf_url && <span className="text-emerald-400">· PDF</span>}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{(ELEMENTS[p.pokemon_element]?.emoji ?? '')} {p.pokemon_element} {p.pdf_url && <span className="text-emerald-400">· PDF</span>}</p>
               </button>
               <div className="flex gap-2 mt-2 pt-2 border-t border-slate-700/50">
                 <button onClick={() => loadForEdit(p)} className="flex-1 text-xs py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center gap-1 transition-colors">

@@ -160,8 +160,9 @@ export function ProblemsPage() {
                 const rate = st.total > 0 ? ((st.accepted / st.total) * 100).toFixed(1) : '0.0';
                 const isSolved = solvedIds.has(p.id);
                 const isAttempted = attemptedIds.has(p.id);
+                const elMeta = ELEMENTS[p.pokemon_element] ?? ELEMENTS.Normal;
                 return (
-                  <tr key={p.id} className="border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors">
+                  <tr key={p.id} className="border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors" style={{ borderLeft: `3px solid ${elMeta.color}60` }}>
                     <td className="px-4 py-3 text-center">
                       {isSolved ? (
                         <CheckCircle2 className="h-5 w-5 text-emerald-400 inline-block" />
