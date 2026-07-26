@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: #020617;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+}
+
+@layer components {
+  .glass {
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(148, 163, 184, 0.12);
+  }
+  .glass-strong {
+    background: rgba(15, 23, 42, 0.85);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-red-500 px-4 py-2 font-semibold text-white transition-all hover:bg-red-600 active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 py-2 font-medium text-slate-200 transition-all hover:border-slate-500 hover:bg-slate-800/50 active:scale-95;
+  }
+  .input-field {
+    @apply w-full rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 text-slate-100 placeholder-slate-500 outline-none transition-colors focus:border-red-500/60 focus:ring-1 focus:ring-red-500/40;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1;
+  }
+}
+
+.prose-poke h1 { @apply text-2xl font-bold text-white mb-3; }
+.prose-poke h2 { @apply text-xl font-semibold text-slate-100 mt-5 mb-2; }
+.prose-poke h3 { @apply text-lg font-semibold text-slate-200 mt-4 mb-2; }
+.prose-poke p { @apply text-slate-300 leading-relaxed my-2; }
+.prose-poke ul { @apply list-disc pl-6 text-slate-300 my-2; }
+.prose-poke ol { @apply list-decimal pl-6 text-slate-300 my-2; }
+.prose-poke code { @apply font-mono text-sm text-emerald-300 bg-slate-800/60 rounded px-1.5 py-0.5; }
+.prose-poke pre { @apply font-mono text-sm text-slate-200 bg-slate-900/80 rounded-lg p-4 overflow-x-auto my-3 border border-slate-700; }
+.prose-poke pre code { @apply bg-transparent text-slate-200 p-0; }
+.prose-poke table { @apply w-full border-collapse my-3 text-sm; }
+.prose-poke th { @apply border border-slate-700 bg-slate-800/50 px-3 py-1.5 text-left text-slate-200 font-semibold; }
+.prose-poke td { @apply border border-slate-700 px-3 py-1.5 text-slate-300; }
+.prose-poke a { @apply text-red-400 hover:text-red-300 underline; }
+.prose-poke blockquote { @apply border-l-4 border-red-500/50 pl-4 italic text-slate-400 my-3; }
+.prose-poke .katex { font-size: 1.05em; }
+.prose-poke .katex-display { margin: 1em 0; overflow-x: auto; overflow-y: hidden; }
