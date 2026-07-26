@@ -83,6 +83,23 @@ const VERDICT_BADGES: Record<TestCaseStatus, string> = {
   CE: 'Confusion Status!',
 };
 
+/**
+ * Số lượng testcase được gửi song song cùng lúc tới Piston/Wandbox.
+ *
+ * TRƯỚC ĐÂY: mỗi testcase = 1 vòng lặp `for` + `await` tuần tự → N testcase
+ * = N round-trip cộng dồn (đây là nguyên nhân chính gây ra độ trễ lớn khi
+ * có nhiều hơn 1 testcase).
+ *
+ * BÂY GIỜ: các testcase được chia thành từng "lô" (chunk) và gửi đồng thời
+ * bằng Promise.allSettled — thời gian chờ của cả lô ~ bằng thời gian của
+ * request chậm nhất trong lô, thay vì tổng cộng tất cả.
+ *
+ * Lưu ý: nếu bạn đang dùng Piston public API (emkc.org) có rate-limit
+ * 5 request/giây, hãy để CONCURRENCY <= 4 để không bị 429. Nếu tự host
+ * Piston bằng Docker, có thể tăng lên 8-10 tuỳ số CPU core của máy chủ.
+ */
+const CONCURRENCY = 4;
+
 export async function judgeSubmission(
   language: LanguageMeta,
   source: string,
@@ -104,145 +121,161 @@ export async function judgeSubmission(
 
   const results: TestCaseResult[] = [];
   let maxRuntime = 0;
-  let maxMemory = 0;
-  let compileError = false;
+  const maxMemory = 0;
 
-  for (let i = 0; i < testCases.length; i++) {
-    const tc = testCases[i];
-    let result: PistonRunResult;
-    try {
-      result = await runCode(language, source, tc.input_data);
-    } catch (e) {
-      const tr: TestCaseResult = {
-        testCaseIndex: i,
-        status: 'CE',
-        verdictBadge: VERDICT_BADGES.CE,
-        executionTimeMs: maxRuntime,
-        inputData: tc.input_data,
-        expectedOutput: tc.expected_output,
-        actualOutput: '',
-        stderr: (e as Error).message,
-      };
-      results.push(tr);
-      return {
-        verdict: 'Runtime Error',
-        passed: i,
-        total: testCases.length,
-        runtimeMs: maxRuntime,
-        memoryKb: maxMemory,
-        failedAt: i,
-        detail: `Execution error on case ${i + 1}: ${(e as Error).message}`,
-        testCaseResults: results,
-      };
-    }
+  // Chạy từng lô (chunk) testcase song song, thay vì từng cái một tuần tự.
+  for (let start = 0; start < testCases.length; start += CONCURRENCY) {
+    const chunk = testCases.slice(start, start + CONCURRENCY);
 
-    if (result.compileOutput && result.code !== 0 && i === 0 && !result.stdout) {
-      compileError = true;
+    // Gửi toàn bộ request trong lô hiện tại CÙNG LÚC (Promise.allSettled
+    // để 1 testcase lỗi không làm crash cả lô — ta tự xử lý lỗi bên dưới).
+    const settled = await Promise.allSettled(
+      chunk.map((tc) => runCode(language, source, tc.input_data)),
+    );
+
+    for (let j = 0; j < settled.length; j++) {
+      const i = start + j;
+      const tc = chunk[j];
+      const outcome = settled[j];
+
+      if (outcome.status === 'rejected') {
+        const message = (outcome.reason as Error)?.message ?? 'Unknown execution error';
+        results.push({
+          testCaseIndex: i,
+          status: 'CE',
+          verdictBadge: VERDICT_BADGES.CE,
+          executionTimeMs: maxRuntime,
+          inputData: tc.input_data,
+          expectedOutput: tc.expected_output,
+          actualOutput: '',
+          stderr: message,
+        });
+        return {
+          verdict: 'Runtime Error',
+          passed: i,
+          total: testCases.length,
+          runtimeMs: maxRuntime,
+          memoryKb: maxMemory,
+          failedAt: i,
+          detail: `Execution error on case ${i + 1}: ${message}`,
+          testCaseResults: results,
+        };
+      }
+
+      const result = outcome.value;
+
+      // Compile error chỉ có ý nghĩa để kiểm tra ở testcase đầu tiên (i === 0):
+      // nếu code không biên dịch được thì mọi testcase khác cũng sẽ lỗi y hệt,
+      // nên ta dừng ngay, không lãng phí thêm lần gọi API nào nữa.
+      if (result.compileOutput && result.code !== 0 && i === 0 && !result.stdout) {
+        results.push({
+          testCaseIndex: i,
+          status: 'CE',
+          verdictBadge: VERDICT_BADGES.CE,
+          executionTimeMs: 0,
+          inputData: tc.input_data,
+          expectedOutput: tc.expected_output,
+          actualOutput: result.compileOutput,
+          stderr: result.stderr,
+        });
+        return {
+          verdict: 'Compile Error',
+          passed: 0,
+          total: testCases.length,
+          runtimeMs: 0,
+          memoryKb: 0,
+          failedAt: i,
+          detail: result.compileOutput.slice(0, 2000),
+          testCaseResults: results,
+        };
+      }
+
+      maxRuntime = Math.max(maxRuntime, result.runtimeMs);
+
+      if (result.runtimeMs > timeLimitMs) {
+        results.push({
+          testCaseIndex: i,
+          status: 'TLE',
+          verdictBadge: VERDICT_BADGES.TLE,
+          executionTimeMs: result.runtimeMs,
+          inputData: tc.input_data,
+          expectedOutput: tc.expected_output,
+          actualOutput: result.stdout,
+          stderr: result.stderr,
+        });
+        return {
+          verdict: 'Time Limit Exceeded',
+          passed: i,
+          total: testCases.length,
+          runtimeMs: maxRuntime,
+          memoryKb: maxMemory,
+          failedAt: i,
+          detail: `TLE on case ${i + 1} (${result.runtimeMs}ms > ${timeLimitMs}ms)`,
+          testCaseResults: results,
+        };
+      }
+
+      if (result.code !== 0 && result.signal) {
+        results.push({
+          testCaseIndex: i,
+          status: 'CE',
+          verdictBadge: VERDICT_BADGES.CE,
+          executionTimeMs: result.runtimeMs,
+          inputData: tc.input_data,
+          expectedOutput: tc.expected_output,
+          actualOutput: result.stdout,
+          stderr: `signal ${result.signal}`,
+        });
+        return {
+          verdict: 'Runtime Error',
+          passed: i,
+          total: testCases.length,
+          runtimeMs: maxRuntime,
+          memoryKb: maxMemory,
+          failedAt: i,
+          detail: `RE on case ${i + 1}: signal ${result.signal}`,
+          testCaseResults: results,
+        };
+      }
+
+      const got = normalize(result.stdout);
+      const want = normalize(tc.expected_output);
+      if (got !== want) {
+        results.push({
+          testCaseIndex: i,
+          status: 'WA',
+          verdictBadge: VERDICT_BADGES.WA,
+          executionTimeMs: result.runtimeMs,
+          inputData: tc.input_data,
+          expectedOutput: tc.expected_output,
+          actualOutput: result.stdout,
+          stderr: result.stderr,
+        });
+        return {
+          verdict: 'Wrong Answer',
+          passed: i,
+          total: testCases.length,
+          runtimeMs: maxRuntime,
+          memoryKb: maxMemory,
+          failedAt: i,
+          detail: `WA on case ${i + 1}.\nExpected:\n${want}\nGot:\n${got}`,
+          testCaseResults: results,
+        };
+      }
+
       results.push({
         testCaseIndex: i,
-        status: 'CE',
-        verdictBadge: VERDICT_BADGES.CE,
-        executionTimeMs: 0,
-        inputData: tc.input_data,
-        expectedOutput: tc.expected_output,
-        actualOutput: result.compileOutput,
-        stderr: result.stderr,
-      });
-      return {
-        verdict: 'Compile Error',
-        passed: 0,
-        total: testCases.length,
-        runtimeMs: 0,
-        memoryKb: 0,
-        failedAt: i,
-        detail: result.compileOutput.slice(0, 2000),
-        testCaseResults: results,
-      };
-    }
-
-    maxRuntime = Math.max(maxRuntime, result.runtimeMs);
-
-    if (result.runtimeMs > timeLimitMs) {
-      results.push({
-        testCaseIndex: i,
-        status: 'TLE',
-        verdictBadge: VERDICT_BADGES.TLE,
+        status: 'AC',
+        verdictBadge: VERDICT_BADGES.AC,
         executionTimeMs: result.runtimeMs,
         inputData: tc.input_data,
         expectedOutput: tc.expected_output,
         actualOutput: result.stdout,
         stderr: result.stderr,
       });
-      return {
-        verdict: 'Time Limit Exceeded',
-        passed: i,
-        total: testCases.length,
-        runtimeMs: maxRuntime,
-        memoryKb: maxMemory,
-        failedAt: i,
-        detail: `TLE on case ${i + 1} (${result.runtimeMs}ms > ${timeLimitMs}ms)`,
-        testCaseResults: results,
-      };
     }
-
-    if (result.code !== 0 && result.signal) {
-      results.push({
-        testCaseIndex: i,
-        status: 'CE',
-        verdictBadge: VERDICT_BADGES.CE,
-        executionTimeMs: result.runtimeMs,
-        inputData: tc.input_data,
-        expectedOutput: tc.expected_output,
-        actualOutput: result.stdout,
-        stderr: `signal ${result.signal}`,
-      });
-      return {
-        verdict: 'Runtime Error',
-        passed: i,
-        total: testCases.length,
-        runtimeMs: maxRuntime,
-        memoryKb: maxMemory,
-        failedAt: i,
-        detail: `RE on case ${i + 1}: signal ${result.signal}`,
-        testCaseResults: results,
-      };
-    }
-
-    const got = normalize(result.stdout);
-    const want = normalize(tc.expected_output);
-    if (got !== want) {
-      results.push({
-        testCaseIndex: i,
-        status: 'WA',
-        verdictBadge: VERDICT_BADGES.WA,
-        executionTimeMs: result.runtimeMs,
-        inputData: tc.input_data,
-        expectedOutput: tc.expected_output,
-        actualOutput: result.stdout,
-        stderr: result.stderr,
-      });
-      return {
-        verdict: 'Wrong Answer',
-        passed: i,
-        total: testCases.length,
-        runtimeMs: maxRuntime,
-        memoryKb: maxMemory,
-        failedAt: i,
-        detail: `WA on case ${i + 1}.\nExpected:\n${want}\nGot:\n${got}`,
-        testCaseResults: results,
-      };
-    }
-
-    results.push({
-      testCaseIndex: i,
-      status: 'AC',
-      verdictBadge: VERDICT_BADGES.AC,
-      executionTimeMs: result.runtimeMs,
-      inputData: tc.input_data,
-      expectedOutput: tc.expected_output,
-      actualOutput: result.stdout,
-      stderr: result.stderr,
-    });
+    // Hết lô này mà chưa "return" sớm ở trên -> tức là cả lô đều AC,
+    // tiếp tục sang lô testcase kế tiếp.
   }
 
   return {
