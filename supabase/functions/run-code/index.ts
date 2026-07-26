@@ -41,6 +41,22 @@ const WANDBOX_COMPILERS: Record<string, string> = {
 /* Signals that indicate the process was killed for exceeding a time limit */
 const TIMEOUT_SIGNALS = new Set(["SIGKILL", "SIGTERM", "SIGXCPU", "SIGALRM", "9", "14", "15", "24"]);
 
+/* Ngân sách thời gian tối đa cho toàn bộ round-trip compile+run tới Piston:
+   thời gian giới hạn chạy (limitMs) + khoảng đệm cho việc biên dịch/hàng đợi.
+   Việc này thay thế cho "chờ vô thời hạn" trước đây. */
+function compileAndRunBudgetMs(limitMs: number): number {
+  return limitMs + 8000;
+}
+
+/* Đọc API key từ biến môi trường của Supabase Edge Function (Dashboard ->
+   Project Settings -> Edge Functions -> Secrets), nếu bạn đã được EngineerMan
+   cấp key. Kể từ 15/2/2026, emkc.org/api/v2/piston KHÔNG còn miễn phí cho
+   public nữa và yêu cầu token — nếu không có key hợp lệ, mọi request Piston
+   nhiều khả năng sẽ bị từ chối/rate-limit và rơi vào nhánh fallback Wandbox
+   (vốn có hàng đợi biên dịch công khai, thường chậm hơn nhiều). Đây rất có
+   thể là nguyên nhân chính của độ trễ ~4000ms bạn đang gặp. */
+const PISTON_API_KEY = Deno.env.get("PISTON_API_KEY");
+
 /* ── Piston (primary) — returns actual CPU time and enforces run_timeout ── */
 async function runPiston(req: RunRequest): Promise<RunResponse> {
   const limitMs = req.timeLimitMs ?? 5000;
@@ -60,12 +76,35 @@ async function runPiston(req: RunRequest): Promise<RunResponse> {
     run_memory_limit: -1,
   };
 
+  /* TRƯỚC ĐÂY: fetch tới Piston không có timeout nào cả — nếu Piston bị
+     treo/rate-limit, request có thể "treo" rất lâu trước khi thất bại,
+     kéo dài toàn bộ thời gian phản hồi. Giờ ta giới hạn cứng bằng
+     AbortController để fail nhanh và chuyển sang Wandbox kịp thời thay vì
+     chờ vô thời hạn. */
+  const controller = new AbortController();
+  const timeoutMs = compileAndRunBudgetMs(limitMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   const t0 = performance.now();
-  const res = await fetch(PISTON_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(PISTON_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(PISTON_API_KEY ? { Authorization: `Bearer ${PISTON_API_KEY}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      throw new Error(`Piston timed out after ${timeoutMs}ms (no response)`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   const wallMs = Math.round(performance.now() - t0);
 
   if (!res.ok) {
